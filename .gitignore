@@ -1,0 +1,11 @@
+# Citrix session tickets: short-lived credentials, never commit
+*.ica
+
+# Citrix installer tarballs (proprietary, not redistributable)
+*.tar.gz
+linuxx64-*/
+
+# Editor / OS clutter
+*~
+*.swp
+.DS_Store

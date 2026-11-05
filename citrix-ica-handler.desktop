@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Citrix HDX Session
+Comment=Open a Citrix .ica session in the published desktop (wfica)
+NoDisplay=true
+MimeType=application/x-ica;
+StartupWMClass=Wfica
+Icon=@HOME@/.local/share/icons/receiver.png
+Categories=Network;
+Exec=@REPO_DIR@/ica-launch.sh %f
