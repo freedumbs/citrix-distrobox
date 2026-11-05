@@ -20,10 +20,29 @@ if [ ! -f "$TARBALL" ]; then
 	exit 1
 fi
 
-echo "==> Creating container '$CONTAINER_NAME' from $IMAGE (no-op if it already exists)"
-distrobox create --name "$CONTAINER_NAME" --image "$IMAGE" --yes
+# Resolve to an absolute path, and require it to be under $HOME: Distrobox
+# shares $HOME with the container at the same path, but not arbitrary
+# host directories.
+TARBALL="$(realpath "$TARBALL")"
+case "$TARBALL" in
+	"$HOME"/*) ;;
+	*)
+		echo "The tarball must be under \$HOME so the container can read it: $TARBALL" >&2
+		echo "Move or copy it into your home directory (e.g. ~/Downloads) and re-run." >&2
+		exit 1
+		;;
+esac
+
+if distrobox list --no-color 2>/dev/null | awk -F'|' 'NR>1 {gsub(/ /, "", $2); print $2}' \
+	| grep -qx "$CONTAINER_NAME"; then
+	echo "==> Container '$CONTAINER_NAME' already exists, reusing it"
+else
+	echo "==> Creating container '$CONTAINER_NAME' from $IMAGE"
+	distrobox create --name "$CONTAINER_NAME" --image "$IMAGE" --yes
+fi
 
 echo "==> Installing baseline packages inside the container"
+# shellcheck disable=SC2016  # single quotes intentional: runs inside the container
 distrobox enter "$CONTAINER_NAME" -- bash -lc '
 	set -euo pipefail
 	sudo apt-get update
@@ -42,6 +61,8 @@ distrobox enter "$CONTAINER_NAME" -- bash -lc '
 	#   (not as a .deb with dependency metadata), so apt never pulls these
 	#   automatically -- without them the embedded login/SSO dialog
 	#   (UIDialogLibWebKit3_ext.so) fails to load. Confirmed via `ldd`.
+	# inotify-tools: the ~/Downloads .ica watcher in
+	#   citrix-workspace-launch.sh.
 	sudo apt-get install -y \
 		lsb-release \
 		libjpeg-turbo8 \
@@ -58,31 +79,34 @@ distrobox enter "$CONTAINER_NAME" -- bash -lc '
 	sudo apt-get install -y libsoup2.4-1 || sudo apt-get install -y libsoup2.4-1t64
 '
 
-echo "==> Copying and extracting the Citrix tarball into the container"
-distrobox enter "$CONTAINER_NAME" -- bash -lc "
+# The tarball path is passed as a positional argument ($1) rather than
+# interpolated into the script string, so paths containing quotes or
+# spaces are handled safely.
+echo "==> Extracting the Citrix tarball into ~/citrix-install"
+# shellcheck disable=SC2016  # $1 must expand inside the container, not here
+distrobox enter "$CONTAINER_NAME" -- bash -lc '
 	set -euo pipefail
 	mkdir -p ~/citrix-install
-	tar -xzf '$TARBALL' -C ~/citrix-install
-"
+	tar -xzf "$1" -C ~/citrix-install
+' _ "$TARBALL"
 
 cat <<EOF
 
 ==> Baseline setup done. The Citrix installer itself is an interactive
-    text wizard (EULA + a few prompts) -- run it yourself. Everything
-    below runs INSIDE the container (distrobox-export only exists there):
+    text wizard (EULA + a few prompts) -- run it yourself, inside the
+    container (see README.md section 8.2 for the prompt answers):
 
     distrobox enter $CONTAINER_NAME
-
-    # --- now inside the container ---
     cd ~/citrix-install
     sudo ./setupwfc
 
-    # confirm the bundled WebKit landed somewhere the linker can see it
-    # (should print a path, no "not found"):
+    # optional: confirm the bundled WebKit resolves (no "not found" lines)
     ldd /opt/Citrix/ICAClient/lib/UIDialogLibWebKit3_ext/UIDialogLibWebKit3_ext.so | grep -i 'webkit\|not found'
 
-    # find the launcher Citrix created, then export it to the host menu:
-    find /usr/share/applications /opt/Citrix -iname '*.desktop'
-    distrobox-export --app <name-from-above>
+    exit
+
+==> Then, back on the host, wire up the menu launcher and .ica handler:
+
+    ./install.sh
 
 EOF

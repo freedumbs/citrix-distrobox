@@ -242,9 +242,10 @@ Shared with host: $HOME · display socket · audio server · network
 | File | Runs on | Purpose |
 |---|---|---|
 | `setup.sh` | Host | Creates the `citrix-workspace` container, installs all dependencies, and extracts the Citrix tarball |
+| `install.sh` | Host | After the Citrix installer: exports the menu launcher, points it at `citrix-workspace-launch.sh`, and registers the `.ica` MIME handler |
 | `citrix-workspace-launch.sh` | Container | Wraps `selfservice`: sets software-rendering env vars and runs the `.ica` watcher for as long as the UI is open |
 | `ica-launch.sh` | Host | MIME handler target: passes a `.ica` file to `wfica` inside the container (auto-starts the container if needed) |
-| `citrix-ica-handler.desktop` | Host | Desktop entry that registers `ica-launch.sh` for `application/x-ica`. Contains `@HOME@` / `@REPO_DIR@` placeholders that are filled in at install time |
+| `citrix-ica-handler.desktop` | Host | Desktop entry that registers `ica-launch.sh` for `application/x-ica`. Contains `@HOME@` / `@REPO_DIR@` placeholders that `install.sh` fills in |
 
 The Citrix installer is proprietary and is **not** included. Download it
 from Citrix's website.
@@ -267,10 +268,11 @@ from Citrix's website.
 ./setup.sh ~/path/to/linuxx64-<version>.tar.gz
 ```
 
-This creates the container from `ubuntu:24.04`, installs the dependency
-set described in [§4](#4-solution-an-ubuntu-userland-in-distrobox),
-extracts the tarball to `~/citrix-install`, and stops before the
-interactive installer.
+This creates the container from `ubuntu:24.04` (or reuses it if it
+already exists), installs the dependency set described in
+[§4](#4-solution-an-ubuntu-userland-in-distrobox), extracts the tarball to
+`~/citrix-install`, and stops before the interactive installer. It
+refuses a tarball outside `$HOME`, because the container can't see it.
 
 ### 8.2 Run the Citrix installer (interactive)
 
@@ -308,45 +310,60 @@ ldd /opt/Citrix/ICAClient/lib/UIDialogLibWebKit3_ext/UIDialogLibWebKit3_ext.so \
   | grep -i 'webkit\|not found'
 ```
 
-### 8.3 Export the launcher and point it at the wrapper
+### 8.3 Integrate with the host desktop
 
-Export the app to the host menu:
+Exit the container, then run from the repository root on the host:
 
 ```sh
+./install.sh
+```
+
+It's safe to re-run, and you **must** re-run it if you move the
+repository, because the desktop entries contain absolute paths. It:
+
+1. Exports the Citrix launcher to the host menu with
+   `distrobox-export --app selfservice`, unless it's already exported.
+2. Rewrites the launcher's `Exec=` line in
+   `~/.local/share/applications/citrix-workspace-selfservice.desktop` so
+   it runs `citrix-workspace-launch.sh`. This applies the
+   software-rendering fix (§5.1) and starts the `.ica` watcher (§5.2).
+3. Fills in the `@HOME@` / `@REPO_DIR@` placeholders in
+   `citrix-ica-handler.desktop`, installs it, and makes it the default for
+   `application/x-ica`.
+4. Refreshes the desktop database and checks that `xdg-mime` now resolves
+   `.ica` files to the new handler.
+
+<details>
+<summary>Manual equivalent (what <code>install.sh</code> does)</summary>
+
+```sh
+# 1. export the launcher
 distrobox enter citrix-workspace -- distrobox-export --app selfservice
-```
 
-Then edit `~/.local/share/applications/citrix-workspace-selfservice.desktop`
-so it runs the wrapper script (replace the path with this repo's
-location):
+# 2. edit ~/.local/share/applications/citrix-workspace-selfservice.desktop:
+#    Exec=/usr/bin/distrobox-enter -n citrix-workspace -- bash /path/to/citrix-distrobox/citrix-workspace-launch.sh
 
-```ini
-Exec=/usr/bin/distrobox-enter -n citrix-workspace -- bash /path/to/citrix-distrobox/citrix-workspace-launch.sh
-```
-
-```sh
-update-desktop-database ~/.local/share/applications
-```
-
-Citrix also exports a hidden `…-citrixapp.desktop` URL-scheme handler
-with `NoDisplay=true`. Leave it in place; it does not appear in the menu.
-
-### 8.4 Install the `.ica` MIME handler
-
-Run from the repository root. This fills in the placeholders in the
-desktop entry and makes it the default handler for `.ica` files:
-
-```sh
+# 3. install the MIME handler (from the repo root)
 sed -e "s|@HOME@|$HOME|g" -e "s|@REPO_DIR@|$PWD|g" \
     citrix-ica-handler.desktop > ~/.local/share/applications/citrix-ica-handler.desktop
 xdg-mime default citrix-ica-handler.desktop application/x-ica
+
+# 4. refresh and verify
 update-desktop-database ~/.local/share/applications
 xdg-mime query default application/x-ica     # → citrix-ica-handler.desktop
 ```
 
-> The `Icon=` line points at `~/.local/share/icons/receiver.png`, the
-> icon `distrobox-export` places there. Change it if your icon is
-> somewhere else; it is cosmetic only.
+</details>
+
+**Notes:**
+
+- Citrix also exports a hidden `…-citrixapp.desktop` URL-scheme handler
+  with `NoDisplay=true`. Leave it in place; it doesn't appear in the menu.
+- The handler's `Icon=` line points at `~/.local/share/icons/receiver.png`,
+  where `distrobox-export` puts the icon. If yours is elsewhere, edit the
+  installed copy. The icon is cosmetic only.
+- On KDE, `xdg-mime` may print `qtpaths: command not found`. That warning
+  is harmless.
 
 ---
 
@@ -372,10 +389,10 @@ A full HDX desktop window confirms that everything works end to end.
 
 ### Updating Citrix
 
-Re-run `setup.sh` with the newer tarball. `distrobox create` does nothing
-if the container already exists. Then run `sudo ./setupwfc` inside the
-container again. Everything Citrix-specific lives in the container, so the
-host needs no changes.
+Re-run `setup.sh` with the newer tarball. It detects and reuses the
+existing container. Then run `sudo ./setupwfc` inside the container again,
+and re-run `./install.sh` on the host in case the new version re-exported
+its launcher. Everything Citrix-specific lives in the container.
 
 ### Removing everything
 
@@ -421,3 +438,7 @@ software is distributed in this repository.
 
 The scripts and documentation in this repository are released under the
 [MIT License](LICENSE).
+
+---
+
+*Developed with assistance from [Claude Code](https://claude.com/claude-code).*
